@@ -19,8 +19,7 @@
  * Copyright 2014 Cloudius Systems
  */
 
-#ifndef REACTOR_HH_
-#define REACTOR_HH_
+#pragma once
 
 #include "seastar.hh"
 #include "iostream.hh"
@@ -49,6 +48,7 @@
 #include <atomic>
 #include <stack>
 #include <experimental/optional>
+#include <boost/next_prior.hpp>
 #include <boost/lockfree/spsc_queue.hpp>
 #include <boost/optional.hpp>
 #include <boost/program_options.hpp>
@@ -1405,7 +1405,7 @@ future<size_t> pollable_fd::write_some(net::packet& p) {
         iovec* iov = reinterpret_cast<iovec*>(p.fragment_array());
         msghdr mh = {};
         mh.msg_iov = iov;
-        mh.msg_iovlen = p.nr_frags();
+        mh.msg_iovlen = std::min<size_t>(p.nr_frags(), IOV_MAX);
         auto r = get_file_desc().sendmsg(&mh, MSG_NOSIGNAL);
         if (!r) {
             return write_some(p);
@@ -1594,5 +1594,3 @@ typename timer<Clock>::time_point timer<Clock>::get_timeout() {
 extern logger seastar_logger;
 
 }
-
-#endif /* REACTOR_HH_ */
