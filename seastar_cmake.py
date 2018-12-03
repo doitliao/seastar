@@ -23,7 +23,7 @@ ROOT_PATH = os.path.realpath(os.path.dirname(__file__))
 
 BUILD_PATHS = { mode: os.path.join(ROOT_PATH, 'build', mode) for mode in SUPPORTED_MODES }
 
-CMAKE_BASIC_ARGS = ['cmake', '-G', 'Ninja']
+COOKING_BASIC_ARGS = ['./cooking.sh', '-r', 'dev', '-i', 'fmt']
 
 def translate_arg(arg, new_name, value_when_none='no'):
     """
@@ -36,4 +36,4 @@ def translate_arg(arg, new_name, value_when_none='no'):
     else:
         value = arg
 
-    return '-DSEASTAR_{}={}'.format(new_name, value)
+    return '-DSeastar_{}={}'.format(new_name, value)

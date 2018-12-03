@@ -28,9 +28,9 @@
 
 #include <thread>
 
-#include "tests/test-utils.hh"
-#include "core/future.hh"
-#include "core/app-template.hh"
+#include "test-utils.hh"
+#include <seastar/core/future.hh>
+#include <seastar/core/app-template.hh>
 #include <boost/test/included/unit_test.hpp>
 
 namespace seastar {
@@ -81,5 +81,7 @@ bool init_unit_test_suite() {
 }
 
 int main(int ac, char** av) {
-    return ::boost::unit_test::unit_test_main(&seastar::init_unit_test_suite, ac, av);
+    const int exit_code = ::boost::unit_test::unit_test_main(&seastar::init_unit_test_suite, ac, av);
+    seastar::global_test_runner().finalize();
+    return exit_code;
 }

@@ -33,20 +33,21 @@
 #include <boost/program_options.hpp>
 #include <boost/iterator/counting_iterator.hpp>
 #include <fstream>
-#include <experimental/filesystem>
 #include <wordexp.h>
 #include <yaml-cpp/yaml.h>
-#include "core/thread.hh"
-#include "core/sstring.hh"
-#include "core/posix.hh"
-#include "core/resource.hh"
-#include "core/aligned_buffer.hh"
-#include "core/sharded.hh"
-#include "core/app-template.hh"
-#include "core/shared_ptr.hh"
-#include "core/fsqual.hh"
-#include "util/defer.hh"
-#include "util/log.hh"
+#include <seastar/core/thread.hh>
+#include <seastar/core/sstring.hh>
+#include <seastar/core/posix.hh>
+#include <seastar/core/resource.hh>
+#include <seastar/core/aligned_buffer.hh>
+#include <seastar/core/sharded.hh>
+#include <seastar/core/app-template.hh>
+#include <seastar/core/shared_ptr.hh>
+#include <seastar/core/fsqual.hh>
+#include <seastar/util/defer.hh>
+#include <seastar/util/log.hh>
+#include <seastar/util/std-compat.hh>
+#include <seastar/util/read_first_line.hh>
 
 using namespace seastar;
 using namespace std::chrono_literals;
@@ -57,36 +58,14 @@ logger iotune_logger("iotune");
 using iotune_clock = std::chrono::steady_clock;
 static thread_local std::default_random_engine random_generator(std::chrono::duration_cast<std::chrono::nanoseconds>(iotune_clock::now().time_since_epoch()).count());
 
-sstring read_sys_file(fs::path sys_file) {
-    auto file = file_desc::open(sys_file.string(), O_RDONLY | O_CLOEXEC);
-    sstring buf;
-    size_t n = 0;
-    do {
-        // try to avoid allocations
-        sstring tmp(sstring::initialized_later{}, 8);
-        auto ret = file.read(tmp.data(), 8ul);
-        if (!ret) { // EAGAIN
-            continue;
-        }
-        n = *ret;
-        if (n > 0) {
-            buf += tmp;
-        }
-    } while (n != 0);
-    auto end = buf.find('\n');
-    auto value = buf.substr(0, end);
-    file.close();
-    return value;
-}
-
 template <typename Type>
 Type read_sys_file_as(fs::path sys_file) {
-    return boost::lexical_cast<Type>(read_sys_file(sys_file));
+    return boost::lexical_cast<Type>(read_first_line(sys_file));
 }
 
 void check_device_properties(fs::path dev_sys_file) {
     auto sched_file = dev_sys_file / "queue" / "scheduler";
-    auto sched_string = read_sys_file(sched_file);
+    auto sched_string = read_first_line(sched_file);
     auto beg = sched_string.find('[');
     size_t len = sched_string.size();
     if (beg == sstring::npos) {
@@ -135,7 +114,7 @@ struct evaluation_directory {
             if (fs::exists(sys_file / "slaves")) {
                 for (auto& dev : fs::directory_iterator(sys_file / "slaves")) {
                     is_leaf = false;
-                    scan_device(read_sys_file(dev / "dev"));
+                    scan_device(read_first_line(dev / "dev"));
                 }
             }
 
@@ -561,7 +540,7 @@ void write_property_file(sstring conf_file, struct std::vector<disk_descriptor> 
 // (absolute, with symlinks resolved), until we find a point that crosses a device ID.
 fs::path mountpoint_of(sstring filename) {
     fs::path mnt_candidate = fs::canonical(fs::path(filename));
-    std::experimental::optional<dev_t> candidate_id = {};
+    compat::optional<dev_t> candidate_id = {};
     auto current = mnt_candidate;
     do {
         auto f = open_directory(current.string()).get0();
@@ -576,6 +555,9 @@ fs::path mountpoint_of(sstring filename) {
 
     return mnt_candidate;
 }
+
+static constexpr unsigned task_quotas_in_default_latency_goal = 3;
+static constexpr float latency_goal = 0.0005;
 
 int main(int ac, char** av) {
     namespace bpo = boost::program_options;
@@ -636,6 +618,7 @@ int main(int ac, char** av) {
                     iotune_tests.stop().get();
                 });
 
+                fmt::print("Starting Evaluation. This may take a while...\n");
                 fmt::print("Measuring sequential write bandwidth: ");
                 std::cout.flush();
                 io_rates write_bw;
@@ -672,10 +655,15 @@ int main(int ac, char** av) {
 
             unsigned num_io_queues = smp::count;
             for (auto& desc : disk_descriptors) {
-                // Allow each I/O Queue to have at least 10k IOPS and 100MB. Values decided based
-                // on the write performance, which tends to be lower.
-                num_io_queues = std::min(smp::count, unsigned(desc.write_iops / 10000));
-                num_io_queues = std::min(smp::count, unsigned(desc.write_bw / (100 * 1024 * 1024)));
+                // Ideally we wouldn't have I/O Queues and would dispatch from every shard (https://github.com/scylladb/seastar/issues/485)
+                // While we don't do that, we'll just be conservative and try to recommend values of I/O Queues that are close to what we
+                // suggested before the I/O Scheduler rework. The I/O Scheduler has traditionally tried to make sure that each queue would have
+                // at least 4 requests in depth, and all its requests were 4kB in size. Therefore, try to arrange the I/O Queues so that we would
+                // end up in the same situation here (that's where the 4 comes from).
+                //
+                // For the bandwidth limit, we want that to be 4 * 4096, so each I/O Queue has the same bandwidth as before.
+                num_io_queues = std::min(smp::count, unsigned((task_quotas_in_default_latency_goal * desc.write_iops * latency_goal) / 4));
+                num_io_queues = std::min(num_io_queues, unsigned((task_quotas_in_default_latency_goal * desc.write_bw * latency_goal) / (4 * 4096)));
                 num_io_queues = std::max(num_io_queues, 1u);
             }
             fmt::print("Recommended --num-io-queues: {}\n", num_io_queues);
@@ -683,11 +671,13 @@ int main(int ac, char** av) {
             auto file = "properties file";
             try {
                 if (configuration.count("properties-file")) {
+                    fmt::print("Writing result to {}\n", configuration["properties-file"].as<sstring>());
                     write_property_file(configuration["properties-file"].as<sstring>(), disk_descriptors);
                 }
 
                 file = "configuration file";
                 if (configuration.count("options-file")) {
+                    fmt::print("Writing result to {}\n", configuration["options-file"].as<sstring>());
                     write_configuration_file(configuration["options-file"].as<sstring>(), format, configuration["properties-file"].as<sstring>(), num_io_queues);
                 }
             } catch (...) {

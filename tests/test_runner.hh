@@ -24,8 +24,8 @@
 #include <memory>
 #include <functional>
 #include <atomic>
-#include "core/future.hh"
-#include "core/posix.hh"
+#include <seastar/core/future.hh>
+#include <seastar/core/posix.hh>
 #include "exchanger.hh"
 
 namespace seastar {
@@ -42,6 +42,7 @@ public:
     void start(int argc, char** argv);
     ~test_runner();
     void run_sync(std::function<future<>()> task);
+    void finalize();
 };
 
 test_runner& global_test_runner();

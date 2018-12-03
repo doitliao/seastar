@@ -26,6 +26,7 @@ dependencies:
         "systemtap-sdt-dev",
         "libtool",
         "cmake",
+        "libc-ares-dev",
         "libyaml-cpp-dev"
     ]
 matrix:
@@ -36,7 +37,7 @@ matrix:
             apt:
                 sources:
                   - ubuntu-toolchain-r-test
-                  - sourceline: 'deb http://ppa.launchpad.net/scylladb/ppa/ubuntu trusty main'
+                  - sourceline: 'ppa:scylladb/ppa'
                 packages:
                   - *seastar_deps
                   - g++-7
@@ -54,7 +55,7 @@ matrix:
                 sources:
                   - ubuntu-toolchain-r-test
                   - llvm-toolchain-trusty-5.0
-                  - sourceline: 'deb http://ppa.launchpad.net/scylladb/ppa/ubuntu trusty main'
+                  - sourceline: 'ppa:scylladb/ppa'
                 packages:
                   - *seastar_deps
                   - clang-5.0
